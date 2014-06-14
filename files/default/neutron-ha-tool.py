@@ -167,7 +167,7 @@ def l3_agent_rebalance(qclient, noop=False):
     #  }
 
     l3_agent_dict = {}
-    agents = list_agents(qclient, agent_type='L3 agent')
+    agents = list_alive_agents(qclient, agent_type='L3 agent')
     num_agents = len(agents)
     if num_agents <= 1:
         LOG.info("No rebalancing required for 1 or fewer agents")
@@ -178,12 +178,12 @@ def l3_agent_rebalance(qclient, noop=False):
             list_routers_on_l3_agent(qclient, l3_agent['id'])
 
     ordered_l3_agent_dict = OrderedDict(sorted(l3_agent_dict.items(),
-                                               key=lambda t: len(t[0])))
+                                               key=lambda t: len(t[1])))
     ordered_l3_agent_list = list(ordered_l3_agent_dict)
     num_agents = len(ordered_l3_agent_list)
     LOG.info("Agent list: %s", ordered_l3_agent_list[0:(num_agents-1/2)+1])
     i = 0
-    for agent in ordered_l3_agent_list[0:num_agents-1/2]:
+    for agent in ordered_l3_agent_list[0:num_agents/2]:
         low_agent_id = ordered_l3_agent_list[i]
         hgh_agent_id = ordered_l3_agent_list[-(i+1)]
 
@@ -201,7 +201,7 @@ def l3_agent_rebalance(qclient, noop=False):
                  low_agent_router_count, hgh_agent_router_count)
 
         for router_id in l3_agent_dict[hgh_agent_id]:
-            if low_agent_router_count >= hgh_agent_router_count:
+            if low_agent_router_count >= hgh_agent_router_count-1:
                 break
             else:
                 LOG.info("Migrating router=%s from agent=%s to agent=%s",
@@ -576,6 +576,15 @@ def list_agents(qclient, agent_type=None):
     if agent_type:
         return [agent for agent in resp['agents']
                 if agent['agent_type'] == agent_type]
+    return resp['agents']
+
+
+def list_alive_agents(qclient, agent_type=None):
+    resp = qclient.list_agents()
+    LOG.debug("list_agents: %s", resp)
+    if agent_type:
+        return [agent for agent in resp['agents']
+                if agent['agent_type'] == agent_type and agent['alive'] is True]
     return resp['agents']
 
 
