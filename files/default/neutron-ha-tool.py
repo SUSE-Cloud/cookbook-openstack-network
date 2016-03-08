@@ -584,7 +584,8 @@ def list_alive_agents(qclient, agent_type=None):
     LOG.debug("list_agents: %s", resp)
     if agent_type:
         return [agent for agent in resp['agents']
-                if agent['agent_type'] == agent_type and agent['alive'] is True]
+                if agent['agent_type'] == agent_type and
+                agent['alive'] is True]
     return resp['agents']
 
 
