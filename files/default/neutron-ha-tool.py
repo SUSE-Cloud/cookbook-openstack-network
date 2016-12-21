@@ -23,6 +23,7 @@
 
 import argparse
 from collections import OrderedDict
+import datetime
 import logging
 from logging.handlers import SysLogHandler
 import os
@@ -53,17 +54,10 @@ IDENTITY_API_VERSIONS = {
     '3': kclientv3
 }
 
+ROUTER_CACHE_MAX_AGE_SECONDS = 5 * 60
 
-def parse_args():
-    # ensure environment has necessary items to authenticate
-    for key in ['OS_USERNAME', 'OS_AUTH_URL', 'OS_REGION_NAME']:
-        if key not in os.environ.keys():
-            raise SystemExit("Your environment is missing '%s'" % key)
-    keys = ['OS_TENANT_NAME', 'OS_PROJECT_NAME']
-    if not any(key in os.environ.keys() for key in keys):
-        raise SystemExit("Your environment is missing "
-                         "'OS_TENANT_NAME' or 'OS_PROJECT_NAME")
 
+def make_argparser():
     ap = argparse.ArgumentParser(description=DESCRIPTION)
     ap.add_argument('-d', '--debug', action='store_true',
                     default=False, help='Show debugging output')
@@ -104,15 +98,41 @@ def parse_args():
                          'is mainly useful when evacuating routers from '
                          'a node where the l3-agent is not running for '
                          'some reason.')
+    ap.add_argument('--agent-selection-mode', choices=['random', 'least-busy'],
+                    default='least-busy',
+                    help='Determines how target agent is selected for routers '
+                         '"random" selects target agent randomly, '
+                         '"least-busy" selects the least busy agent.')
+    ap.add_argument('--target-agent', default=None,
+                    help='Explicitly select a target agent either by specifying '
+                         'an agent id or a host id.')
+    ap.add_argument('--router-list-file', default=None,
+                    help='Only routers specified in the list file will be '
+                         'moved. The router list file should specify one '
+                         'router id per line.')
     wait_parser = ap.add_mutually_exclusive_group(required=False)
     wait_parser.add_argument('--wait-for-router', action='store_true',
-                    dest='wait_for_router')
+                             dest='wait_for_router')
     wait_parser.add_argument('--no-wait-for-router', action='store_false',
-                    dest='wait_for_router',
-                    help='When migrating routers, do not wait for its ports and '
-                         'floating IPs to be ACTIVE again on the target '
-                         'agent.')
+                             dest='wait_for_router',
+                             help='When migrating routers, do not wait for '
+                                  'its ports and floating IPs to be ACTIVE '
+                                  'again on the target agent.')
     wait_parser.set_defaults(wait_for_router=True)
+    return ap
+
+
+def parse_args():
+    # ensure environment has necessary items to authenticate
+    for key in ['OS_USERNAME', 'OS_AUTH_URL', 'OS_REGION_NAME']:
+        if key not in os.environ.keys():
+            raise SystemExit("Your environment is missing '%s'" % key)
+    keys = ['OS_TENANT_NAME', 'OS_PROJECT_NAME']
+    if not any(key in os.environ.keys() for key in keys):
+        raise SystemExit("Your environment is missing "
+                         "'OS_TENANT_NAME' or 'OS_PROJECT_NAME")
+
+    ap = make_argparser()
     args = ap.parse_args()
     modes = [
         args.l3_agent_check,
@@ -228,6 +248,9 @@ def run(args):
     # set json return type
     qclient.format = 'json'
 
+    configure(args, qclient)
+    Configuration.router_filter.load()
+
     if args.l3_agent_check:
         LOG.info("Performing L3 Agent Health Check")
         # We don't want the health check to retry - if it fails, we
@@ -307,8 +330,8 @@ def l3_agent_rebalance(qclient, noop=False, wait_for_router=True):
         routers_on_l3_agent_dict[l3_agent['id']] = \
             list_routers_on_l3_agent(qclient, l3_agent['id'])
 
-    ordered_l3_agent_dict = OrderedDict(sorted(routers_on_l3_agent_dict.items(),
-                                               key=lambda t: len(t[0])))
+    ordered_l3_agent_dict = OrderedDict(
+        sorted(routers_on_l3_agent_dict.items(), key=lambda t: len(t[0])))
     ordered_l3_agent_list = list(ordered_l3_agent_dict)
     num_agents = len(ordered_l3_agent_list)
     LOG.info("Agent list: %s",
@@ -396,7 +419,8 @@ def l3_agent_migrate(qclient, noop=False, now=False,
     """
     Walk the l3 agents searching for agents that are offline.  For those that
     are offline, we will retrieve a list of routers on them and migrate them to
-    a random l3 agent that is online.
+    an l3 agent that is online using the strategy specified by
+    Configuration.agent_picker.
 
     :param qclient: A neutronclient
     :param noop: Optional noop flag
@@ -549,11 +573,15 @@ def migrate_l3_routers_from_agent(qclient, agent, targets,
                                   noop, wait_for_router, delete_namespace):
     LOG.info("Querying agent_id=%s for routers to migrate away", agent['id'])
     router_id_list = list_routers_on_l3_agent(qclient, agent['id'])
+    router_id_list = Configuration.router_filter.filter_routers(router_id_list)
 
     migrations = 0
     errors = 0
+    agent_picker = Configuration.agent_picker
+    agent_picker.set_agents(targets)
+
     for router_id in router_id_list:
-        target = random.choice(targets)
+        target = agent_picker.pick()
         if migrate_router_safely(qclient, noop, router_id, agent,
                                  target, wait_for_router, delete_namespace):
             migrations += 1
@@ -764,7 +792,7 @@ def list_routers(qclient):
     resp = qclient.list_routers()
     LOG.debug("list_routers: %s", resp)
     # Filter routers to not include HA routers
-    return [i for i in resp['routers'] if not i.get('ha') == True]
+    return [i for i in resp['routers'] if not i.get('ha') == True]  # noqa
 
 
 def list_routers_on_l3_agent(qclient, agent_id):
@@ -776,7 +804,7 @@ def list_routers_on_l3_agent(qclient, agent_id):
 
     resp = qclient.list_routers_on_l3_agent(agent_id)
     LOG.debug("list_routers_on_l3_agent: %s", resp)
-    return [r['id'] for r in resp['routers'] if not r.get('ha') == True]
+    return [r['id'] for r in resp['routers'] if not r.get('ha') == True]  # noqa
 
 
 def list_agents(qclient, agent_type=None):
@@ -902,6 +930,132 @@ def list_dead_agents(agent_list, agent_type):
     """
     return [agent for agent in agent_list
             if agent['agent_type'] == agent_type and agent['alive'] is False]
+
+
+class RandomAgentPicker(object):
+    def __init__(self):
+        self.agents = []
+
+    def set_agents(self, agents):
+        self.agents = agents
+
+    def pick(self):
+        return random.choice(self.agents)
+
+
+class LeastBusyAgentPicker(object):
+    def __init__(self, qclient):
+        self.cache_created_at = None
+        self.qclient = qclient
+        self.agents_by_id = {}
+        self.router_count_per_agent_id = {}
+
+    def set_agents(self, agents):
+        self.agents_by_id = {agent['id']: agent for agent in agents}
+        self.refresh_router_count_per_agent_id()
+
+    def refresh_router_count_per_agent_id(self):
+        LOG.info("Refreshing router count per agent cache")
+        self.router_count_per_agent_id = dict()
+        for agent_id in self.agents_by_id:
+            self.router_count_per_agent_id[agent_id] = len(
+                list_routers_on_l3_agent(self.qclient, agent_id)
+            )
+        self.cache_created_at = datetime.datetime.now()
+
+    def cache_expired(self):
+        cache_life = datetime.datetime.now() - self.cache_created_at
+        return cache_life.total_seconds() > ROUTER_CACHE_MAX_AGE_SECONDS
+
+    def pick(self):
+        if self.cache_expired():
+            self.refresh_router_count_per_agent_id()
+
+        agent_id_number_of_routers = sorted(
+            self.router_count_per_agent_id.items(),
+            key=lambda x: (x[1], x[0])
+        )
+        agent_id = agent_id_number_of_routers[0][0]
+        self.router_count_per_agent_id[agent_id] += 1
+        return self.agents_by_id[agent_id]
+
+
+class SingleAgentPicker(object):
+    agent_keys = ('id', 'host')
+
+    def __init__(self, agent_selection_value):
+        self.agent_selection_value = agent_selection_value
+
+    def set_agents(self, agents):
+        self.agents = agents
+
+    def find_agent(self, value):
+        for agent in self.agents:
+            agent_values = [agent.get(key) for key in self.agent_keys]
+            if value in agent_values:
+                return agent
+        raise IndexError('Cannot find desired agent')
+
+    def pick(self):
+        if not self.agent_selection_value:
+            raise ValueError('agent_selection_value is None')
+
+        return self.find_agent(self.agent_selection_value)
+
+
+class NullRouterFilter(object):
+    def load(self):
+        pass
+
+    def filter_routers(self, router_id_list):
+        return router_id_list
+
+
+class ListFileBasedRouterFilter(object):
+    def __init__(self, router_list_file):
+        self.router_list_file = router_list_file
+        self.router_list = []
+
+    def load(self):
+        self.router_list = []
+        with open(self.router_list_file, 'r') as fh_router_list:
+            for line in fh_router_list.read().split():
+                router_id = line.strip()
+                if router_id:
+                    self.router_list.append(router_id)
+
+    def filter_routers(self, router_id_list):
+        return [
+            router_id
+            for router_id in router_id_list
+            if router_id in self.router_list
+        ]
+
+
+class Configuration(object):
+    """
+    Registry for storing application's configuration
+    """
+
+    agent_picker = RandomAgentPicker()
+    router_filter = NullRouterFilter()
+
+
+def configure(args, qclient):
+    if args.agent_selection_mode == 'random':
+        Configuration.agent_picker = RandomAgentPicker()
+    elif args.agent_selection_mode == 'least-busy':
+        Configuration.agent_picker = LeastBusyAgentPicker(qclient)
+    else:
+        raise ValueError('Invalid agent_selection_mode')
+
+    if args.target_agent is not None:
+        Configuration.agent_picker = SingleAgentPicker(args.target_agent)
+
+    if args.router_list_file:
+        Configuration.router_filter = ListFileBasedRouterFilter(
+            args.router_list_file
+        )
 
 
 if __name__ == '__main__':

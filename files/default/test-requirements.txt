@@ -1,0 +1,6 @@
+coverage
+flake8
+
+retrying
+python-neutronclient
+python-keystoneclient

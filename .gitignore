@@ -4,4 +4,6 @@
 .vagrant/
 .coverage/
 *.swp
+*.pyc
+.coverage
 Vagrantfile
