@@ -47,40 +47,36 @@ class TestEvacuateLbaasV2Agents(unittest.TestCase):
     @mock.patch('neutron-evacuate-lbaasv2-agent.'
                 'EvacuateLbaasV2Agent.loadbalancers_on_agent')
     @mock.patch('neutron-evacuate-lbaasv2-agent.'
-                'RemoteLbaasV2Cleanup')
-    def test_restarts_agents_using_crm_on_ha(self, mock_cleanup, mock_lbaas):
+                'restart_lbaasv2_agent_crm')
+    @mock.patch('neutron-evacuate-lbaasv2-agent.'
+                'restart_lbaasv2_agent_systemd')
+    def test_restarts_agents_using_crm_on_ha(self, systemd_cleanup,
+                                             crm_cleanup, mock_lbaas):
         mock_lbaas.return_value = ['lb1']
         evacuate_lbaas.cfg.CONF.set_override("use_crm", True)
 
         self.evacuate_lbaas.run()
-        self.assertEqual(
-            mock_cleanup.return_value.restart_lbaasv2_agent_crm.call_count,
-            2
-        )
-        self.assertEqual(
-            mock_cleanup.return_value.restart_lbaasv2_agent_systemd.call_count,
-            0
-        )
+        self.assertEqual(crm_cleanup.call_count, 2)
+        self.assertEqual(systemd_cleanup.call_count, 0)
 
     @mock.patch('neutron-evacuate-lbaasv2-agent.'
                 'EvacuateLbaasV2Agent.loadbalancers_on_agent')
     @mock.patch('neutron-evacuate-lbaasv2-agent.'
-                'RemoteLbaasV2Cleanup')
+                'restart_lbaasv2_agent_crm')
+    @mock.patch('neutron-evacuate-lbaasv2-agent.'
+                'restart_lbaasv2_agent_systemd')
     def test_restarts_agents_using_systemd_no_ha(self,
-                                                 mock_cleanup,
+                                                 systemd_restart,
+                                                 crm_restart,
                                                  mock_lbaas):
         mock_lbaas.return_value = ['lb1']
         evacuate_lbaas.cfg.CONF.set_override("use_crm", False)
         self.evacuate_lbaas.run()
         self.assertEqual(
-            mock_cleanup.return_value.restart_lbaasv2_agent_crm.call_count,
+            crm_restart.call_count,
             0
         )
         self.assertEqual(
-            mock_cleanup.return_value.restart_lbaasv2_agent_systemd.call_count,
+            systemd_restart.call_count,
             2
         )
-
-
-if __name__ == "__main__":
-    unittest.main()

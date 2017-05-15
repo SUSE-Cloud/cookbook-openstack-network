@@ -5,8 +5,6 @@ python:
 install:
     - pip install -r files/default/test-requirements.txt
 script:
-    - flake8 neutron-ha-tool.py test-neutron-ha-tool.py 
-    - flake8 neutron-evacuate-lbaasv2-agent.py test-neutron-evacuate-lbaasv2-agent.py
-    - python files/default/test-neutron-ha-tool.py
-    - python files/default/test-neutron-evacuate-lbaasv2-agent.py
+    - flake8 *.py
+    - cd files/default && nosetests -v
 

@@ -38,7 +38,6 @@ except ImportError:
         '', os.path.join(dirname, '/usr/bin/neutron-ha-tool'))
 
 
-
 class EvacuateLbaasV2Agent(object):
 
     def __init__(self):
@@ -157,8 +156,7 @@ class EvacuateLbaasV2Agent(object):
                 self.reassign_loadbalancers(load_balancers, target_agents)
             )
 
-            if (cfg.CONF.source_agent_restart or
-                cfg.CONF.delete_namespaces):
+            if (cfg.CONF.source_agent_restart or cfg.CONF.delete_namespaces):
                 # Make sure the source agent is handled first
                 agents_to_restart.insert(0, self.host_to_evacuate)
 
@@ -166,64 +164,52 @@ class EvacuateLbaasV2Agent(object):
 
             for host in agents_to_restart:
                 LOG.info("restarting agent on %s" % host)
-                cleanup = RemoteLbaasV2Cleanup(host, timeout=30)
-                if (host != self.host_to_evacuate or
-                    cfg.CONF.source_agent_restart):
+                if (host != self.host_to_evacuate or cfg.CONF.source_agent_restart):  # noqa
                     if cfg.CONF.use_crm:
-                        cleanup.restart_lbaasv2_agent_crm()
+                        restart_lbaasv2_agent_crm(host)
                     else:
-                        cleanup.restart_lbaasv2_agent_systemd()
+                        restart_lbaasv2_agent_systemd(host)
 
-                if (host == self.host_to_evacuate and
-                    cfg.CONF.delete_namespaces):
-                    cleanup.delete_lbaasv2_namespaces(load_balancers)
+                if (host == self.host_to_evacuate and cfg.CONF.delete_namespaces):  # noqa
+                    delete_lbaasv2_namespaces(host, load_balancers)
         else:
             LOG.info("The agent on %s is not hosting any loadbalancers.",
                      self.host_to_evacuate)
         return(0)
 
 
-class RemoteLbaasV2Cleanup(hatool.RemoteNodeCleanup):
+def restart_lbaasv2_agent_crm(hostname):
+    with hatool.connect_to_host(hostname, 30) as host:
+        host.run_timeout = 30
+        try:
+            host.run("crm --wait node maintenance")
+            host.run(
+                "systemctl restart openstack-neutron-lbaasv2-agent")
+            host.run("crm --wait node ready")
+        except socket.timeout:
+            LOG.warn("SSH timeout exceeded. Failed to restart "
+                     "openstack-neutron-lbaasv2-agent on %s",
+                     host)
 
-    def restart_lbaasv2_agent_crm(self):
-        self._ssh_connect()
-        with self.ssh_client:
-            try:
-                self._simple_ssh_command("crm --wait node maintenance")
-                self._simple_ssh_command(
-                    "systemctl restart openstack-neutron-lbaasv2-agent")
-                self._simple_ssh_command("crm --wait node ready")
-            except socket.timeout:
-                LOG.warn("SSH timeout exceeded. Failed to restart "
-                         "openstack-neutron-lbaasv2-agent on %s",
-                         self.target_host)
 
-    def restart_lbaasv2_agent_systemd(self):
-        self._ssh_connect()
-        with self.ssh_client:
-            try:
-                self._simple_ssh_command(
-                    "systemctl restart openstack-neutron-lbaasv2-agent")
-            except socket.timeout:
-                LOG.warn("SSH timeout exceeded. Failed to restart "
-                         "openstack-neutron-lbaasv2-agent on %s",
-                         self.target_host)
+def restart_lbaasv2_agent_systemd(hostname):
+    with hatool.connect_to_host(hostname, 30) as host:
+        host.run_timeout = 30
+        try:
+            host.run(
+                "systemctl restart openstack-neutron-lbaasv2-agent")
+        except socket.timeout:
+            LOG.warn("SSH timeout exceeded. Failed to restart "
+                     "openstack-neutron-lbaasv2-agent on %s",
+                     host)
 
-    def delete_lbaasv2_namespaces(self, loadbalancer_ids):
-        self._ssh_connect()
-        with self.ssh_client:
-            for lb in loadbalancer_ids:
-                namespace = "qlbaas-" + lb
-                LOG.info("deleting namespace %s on %s",
-                         namespace, self.target_host)
-                try:
-                    if self._namespace_exists(namespace):
-                        self._kill_pids_in_namespace(namespace)
-                        self._simple_ssh_command(self.netns_del + namespace)
-                except socket.timeout:
-                    LOG.warn("SSH timeout exceeded. Failed to delete "
-                             "namespace %s on %s", namespace,
-                             self.target_host)
+
+def delete_lbaasv2_namespaces(hostname, loadbalancer_ids):
+    with hatool.connect_to_host(hostname, 30) as host:
+        host.run_timeout = 30
+        for lb in loadbalancer_ids:
+            namespace = "qlbaas-" + lb
+            hatool.Namespace(host, namespace).destroy()
 
 
 if __name__ == '__main__':

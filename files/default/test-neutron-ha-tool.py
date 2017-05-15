@@ -2,8 +2,8 @@ import argparse
 import datetime
 import unittest
 import collections
+import functools
 import importlib
-import logging
 import tempfile
 import mock
 import socket
@@ -330,10 +330,28 @@ class TestWhitelistRouterFilter(unittest.TestCase):
         self.assertEqual(['router-id-1'], filtered_router_ids)
 
 
+def mocked_ssh_client(fun):
+    @functools.wraps(fun)
+    def decorated(*args, **kwargs):
+        with mock.patch('neutron-ha-tool.paramiko.SSHClient') as ssh_client:
+            mock_client = mock.Mock()
+
+            _mock_context = mock.Mock()
+            _mock_context.__enter__ = mock.Mock()
+            _mock_context.__exit__ = mock.Mock()
+            _mock_context.__exit__.return_value = False
+            _mock_context.__enter__.return_value = mock_client
+
+            ssh_client.return_value = _mock_context
+            return fun(*tuple(args + (mock_client, )), **kwargs)
+
+    return decorated
+
+
 class TestSshDeleteRouterNamespace(unittest.TestCase):
 
-    @mock.patch('neutron-ha-tool.paramiko.SSHClient')
-    def test_namespace_deleted(self, mock_ssh):
+    @mocked_ssh_client
+    def test_namespace_deleted(self, mock_client):
         self.ssh_exec_side_effect_counter = 0
 
         def ssh_exec_side_effect(*args, **kwargs):
@@ -360,9 +378,10 @@ class TestSshDeleteRouterNamespace(unittest.TestCase):
 
             return [mock.MagicMock, mock_stdout, mock.MagicMock]
 
-        mock_ssh.return_value.exec_command.side_effect = ssh_exec_side_effect
-        ns_cleanup = ha_tool.RemoteRouterNsCleanup("host1")
-        ns_cleanup.delete_router_namespace("routerid1")
+        mock_client.exec_command.side_effect = ssh_exec_side_effect
+
+        ha_tool.destroy_router_namespace('host1', 'routerid1')
+
         expected_calls = [
             mock.call("ip netns list", get_pty=mock.ANY, timeout=mock.ANY),
             mock.call("ip netns pids qrouter-routerid1", get_pty=mock.ANY,
@@ -374,12 +393,12 @@ class TestSshDeleteRouterNamespace(unittest.TestCase):
             mock.call("ip netns delete qrouter-routerid1", get_pty=mock.ANY,
                       timeout=mock.ANY)
         ]
-        mock_ssh.return_value.connect.assert_called_once_with(
+        mock_client.connect.assert_called_once_with(
             "host1", timeout=mock.ANY)
-        mock_ssh.return_value.exec_command.assert_has_calls(expected_calls)
+        mock_client.exec_command.assert_has_calls(expected_calls)
 
-    @mock.patch('neutron-ha-tool.paramiko.SSHClient')
-    def test_namespace_does_not_exist(self, mock_ssh):
+    @mocked_ssh_client
+    def test_namespace_does_not_exist(self, mock_client):
         def side_effect_namespace_absent(*args, **kwargs):
             mock_stdout = mock.MagicMock()
             mock_stdout.readlines.return_value = []
@@ -388,22 +407,20 @@ class TestSshDeleteRouterNamespace(unittest.TestCase):
                 mock_stdout.readlines.return_value = ["qrouter-otherid\r\n"]
             return [mock.MagicMock(), mock_stdout, mock.MagicMock()]
 
-        ns_cleanup = ha_tool.RemoteRouterNsCleanup("host1")
-        mock_ssh.return_value.exec_command.side_effect = \
+        mock_client.exec_command.side_effect = \
             side_effect_namespace_absent
-        ns_cleanup.delete_router_namespace("routerid1")
-        mock_ssh.return_value.exec_command.assert_called_once_with(
+        ha_tool.destroy_router_namespace('host1', 'routerid1')
+        mock_client.exec_command.assert_called_once_with(
             "ip netns list", timeout=mock.ANY, get_pty=mock.ANY)
 
-    @mock.patch('neutron-ha-tool.paramiko.SSHClient')
-    def test_ssh_command_timeout(self, mock_ssh):
+    @mocked_ssh_client
+    def test_ssh_command_timeout(self, mock_client):
         def side_effect_ssh_connect(self, *args, **kwargs):
             raise socket.timeout
 
-        mock_ssh.return_value.exec_command.side_effect = \
+        mock_client.exec_command.side_effect = \
             side_effect_ssh_connect
-        ns_cleanup = ha_tool.RemoteRouterNsCleanup("host1")
-        ns_cleanup.delete_router_namespace("routerid1")
+        ha_tool.destroy_router_namespace('host1', 'routerid1')
 
 
 class TestAgentIdBasedAgentPicker(unittest.TestCase):
@@ -518,7 +535,7 @@ class TestArgumentParsing(unittest.TestCase):
         self.assertEqual('host', params.target_host)
 
 
-def signal_tester(queue):
+def signal_harness(queue):
     import importlib
     import time
     import sys
@@ -545,7 +562,7 @@ class TestSignalHandling(unittest.TestCase):
     def test_term_signal_handling_functionality(self):
         queue = multiprocessing.Queue()
 
-        proc = multiprocessing.Process(target=signal_tester, args=(queue,))
+        proc = multiprocessing.Process(target=signal_harness, args=(queue,))
         proc.start()
         self.assertEquals('started critical block', queue.get())
         proc.terminate()
@@ -671,6 +688,49 @@ class TestAgentRebalancing(unittest.TestCase):
         )
 
 
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.DEBUG)
-    unittest.main()
+def mock_exec_command_call(ssh_client, lines=None, return_code=0):
+    lines = lines or []
+    stdout = mock.Mock()
+    stdout.readlines.return_value = lines
+    stdout.channel.recv_exit_status.return_value = return_code
+    ssh_client.exec_command.return_value = (
+        mock.Mock(), stdout, mock.Mock()
+    )
+
+
+class TestSSHHost(unittest.TestCase):
+    @mocked_ssh_client
+    def test_str_prints_hostname(self, ssh_client):
+        with ha_tool.connect_to_host('somehost', 10) as ssh_host:
+            self.assertEqual('somehost', str(ssh_host))
+
+    @mocked_ssh_client
+    def test_connect_timeout(self, ssh_client):
+        with ha_tool.connect_to_host('somehost', 10):
+            pass
+
+        ssh_client.connect.assert_called_once_with('somehost', timeout=10)
+
+    @mocked_ssh_client
+    def test_setting_run_timeout_on_host(self, ssh_client):
+        mock_exec_command_call(ssh_client)
+
+        with ha_tool.connect_to_host('somehost', 10) as host:
+            host.run_timeout = 30
+            host.run('ls -la')
+
+        ssh_client.exec_command.assert_called_once_with(
+            'ls -la', timeout=30, get_pty=True)
+
+    @mocked_ssh_client
+    def test_run_return_values(self, ssh_client):
+        mock_exec_command_call(
+            ssh_client,
+            lines=['  line 1  \r\n', '  line2  \r\n'],
+            return_code=4
+        )
+
+        with ha_tool.connect_to_host('somehost', 10) as host:
+            result = host.run('ls -la')
+
+        self.assertEqual([4, ['line 1', 'line2']], result)

@@ -6,12 +6,12 @@ Make a python 2 virtual environment, activate it, and install the requirements:
 
 Run the tests
 
-    coverage run test-neutron-ha-tool.py
+    coverage run $(which nosetests) .
 
 Coverage report
 
-    coverage report -i neutron-ha-tool.py
+    coverage report -i $(pwd)/*.py
 
 Code analysis
 
-    flake8 neutron-ha-tool.py test-neutron-ha-tool.py
+    flake8 *.py

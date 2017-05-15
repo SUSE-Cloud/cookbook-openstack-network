@@ -1,6 +1,7 @@
 coverage
 flake8
 mock
+nose
 
 retrying
 paramiko
