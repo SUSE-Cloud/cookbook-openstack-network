@@ -699,22 +699,24 @@ def migrate_router(qclient, router, agent, target,
     qclient.remove_router_from_l3_agent(agent['id'], router['id'])
     LOG.debug("Removed router from agent=%s" % agent['id'])
 
-    # ensure it is removed
-    router_ids = [
-        r['id'] for r in list_routers_on_l3_agent(qclient, agent['id'])
-    ]
-    if router['id'] in router_ids:
-        if router['distributed']:
-            # Because of bsc#1016943, the router is not completely removed
-            # from the agent. As a workaround, issuing a second remove
-            # seems to bring the router/agent intro correct state
-            qclient.remove_router_from_l3_agent(agent['id'], router['id'])
-            LOG.debug("The router was not correctly deleted from agent=%s, "
-                      "retrying." % agent['id'])
+    router_still_on_source_agent = router_is_on_agent(qclient, router, agent)
 
-        if router in list_routers_on_l3_agent(qclient, agent['id']):
-            raise RuntimeError("Failed to remove router_id=%s from agent_id="
-                               "%s" % (router['id'], agent['id']))
+    # ensure it is removed
+    if router_still_on_source_agent and router['distributed']:
+        # Because of bsc#1016943, the router is not completely removed
+        # from the agent. As a workaround, issuing a second remove
+        # seems to bring the router/agent intro correct state
+        qclient.remove_router_from_l3_agent(agent['id'], router['id'])
+        LOG.debug("The router was not correctly deleted from agent=%s, "
+                  "retrying." % agent['id'])
+
+        router_still_on_source_agent = router_is_on_agent(
+            qclient, router, agent
+        )
+
+    if router_still_on_source_agent:
+        raise RuntimeError("Failed to remove router_id=%s from agent_id="
+                           "%s" % (router['id'], agent['id']))
 
     # add the router id to a live agent
     router_body = {'router_id': router['id']}
@@ -722,10 +724,7 @@ def migrate_router(qclient, router, agent, target,
     LOG.debug("Added router to agent=%s" % target['id'])
 
     # ensure it is added or log an error
-    router_ids = [
-        r['id'] for r in list_routers_on_l3_agent(qclient, target['id'])
-    ]
-    if router['id'] not in router_ids:
+    if not router_is_on_agent(qclient, router, target):
         raise RuntimeError("Failed to add router_id=%s from agent_id=%s" %
                            (router['id'], agent['id']))
     if wait_for_router:
@@ -857,6 +856,13 @@ def list_routers_on_l3_agent(qclient, agent_id):
     resp = qclient.list_routers_on_l3_agent(agent_id)
     LOG.debug("list_routers_on_l3_agent: %s", resp)
     return [r for r in resp['routers'] if not r.get('ha') == True]  # noqa
+
+
+def router_is_on_agent(qclient, router, agent):
+    router_ids = [
+        r['id'] for r in list_routers_on_l3_agent(qclient, agent['id'])
+    ]
+    return router['id'] in router_ids
 
 
 def list_agents(qclient, agent_type=None):
