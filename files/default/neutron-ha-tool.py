@@ -538,11 +538,6 @@ def l3_agent_evacuate(qclient, agent_host, agent_picker, router_filter,
     """
 
     agent_list = list_agents(qclient, agent_type='L3 agent')
-    target_list = target_agent_list(agent_list, 'L3 agent', agent_host)
-
-    if len(target_list) < 1:
-        LOG.error("There are no l3 agents alive to migrate routers onto")
-        return 0
 
     agent_to_evacuate = None
     for agent in agent_list:
@@ -552,7 +547,14 @@ def l3_agent_evacuate(qclient, agent_host, agent_picker, router_filter,
 
     if not agent_to_evacuate:
         LOG.error("Could not locate agent to evacuate; aborting!")
-        return 1
+        return 0
+
+    target_list = target_agent_list(agent_list, 'L3 agent',
+                                    exclude_agent=agent_to_evacuate)
+
+    if len(target_list) < 1:
+        LOG.error("There are no l3 agents alive to migrate routers onto")
+        return 0
 
     (migrations, errors) = \
         migrate_l3_routers_from_agent(qclient, agent_to_evacuate,
@@ -945,31 +947,23 @@ def list_alive_l3_agents(agent_list):
             agent['admin_state_up'] is True]
 
 
-def target_agent_list(agent_list, agent_type, exclude_agent_host):
+def target_agent_list(agent_list, agent_type, exclude_agent):
     """
     Return a list of agents that are alive, excluding the one we want to
     migrate from
 
     :param agent_list: API response for list_agents()
     :param agent_type: used to filter the type of agent
-    :param exclude_agent_host: hostname of agent to exclude from the list
+    :param exclude_agent: agent to exclude from the list
 
     """
-    agent_info = [
-        i for i in agent_list
-        if i.get('host', None) == exclude_agent_host
-    ]
-    if not agent_info:
-        LOG.error("Cannot find agent %s information.", exclude_agent_host)
-        return []
-    agent_info = agent_info[0]
-    agent_mode = agent_info['configurations']['agent_mode']
+    agent_mode = exclude_agent['configurations']['agent_mode']
 
     return [agent for agent in agent_list
             if agent['agent_type'] == agent_type and
             agent['alive'] and
             agent['admin_state_up'] is True and
-            agent['host'] != exclude_agent_host and
+            agent['id'] != exclude_agent['id'] and
             agent['configurations']['agent_mode'] == agent_mode]
 
 
