@@ -683,8 +683,8 @@ def migrate_router(qclient, router, agent, target,
 
     :param qclient: A neutronclient
     :param router: The router to migrate
-    :param agent_id: The id of the l3 agent to migrate from
-    :param target_id: The id of the l3 agent to migrate to
+    :param agent: The l3 agent to migrate/remove from
+    :param target: The l3 agent to migrate to
     """
 
     LOG.info("Migrating router=%s from agent=%s to agent=%s",
