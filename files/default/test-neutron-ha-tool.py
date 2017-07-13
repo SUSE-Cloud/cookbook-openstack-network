@@ -85,11 +85,11 @@ class FakeNeutronClient(object):
             ]
         }
 
-def setup_fake_agent(alive, mode='legacy'):
+def setup_fake_agent(alive, admin_state_up=True, mode='legacy'):
     return {
         'agent_type': 'L3 agent',
         'alive': alive,
-        'admin_state_up': alive,
+        'admin_state_up': admin_state_up,
         'configurations': {
             'agent_mode': mode
         }
@@ -228,6 +228,23 @@ class TestL3AgentEvacuate(unittest.TestCase):
         )
 
         self.assertEqual(0, error_count)
+
+    def test_evacuate_without_admin_up_agents_returns_no_errors_does_nothing(self):
+        fake_neutron = setup_fake_neutron(
+            [setup_fake_agent(alive=True, admin_state_up=False)])
+        neutron_client = FakeNeutronClient(fake_neutron)
+        fake_neutron.add_router('live-agent-0', 'router', {})
+
+        error_count = ha_tool.l3_agent_evacuate(
+            neutron_client, 'live-agent-0-host', ha_tool.RandomAgentPicker(),
+            ha_tool.NullRouterFilter()
+        )
+
+        self.assertEqual(0, error_count)
+        self.assertEqual(
+            set(['router']),
+            fake_neutron.routers_by_agent['live-agent-0']
+        )
 
     def test_evacuate_live_agent_moves_routers_and_returns_no_errors(self):
         fake_neutron = setup_fake_neutron(2*[setup_fake_agent(alive=True)])
