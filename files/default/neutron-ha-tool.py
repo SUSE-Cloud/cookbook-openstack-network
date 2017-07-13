@@ -362,7 +362,7 @@ def live_agent_list(qclient):
     """
     agents = []
     all_agents = list_agents(qclient)
-    for agent_dict in list_alive_agents(all_agents, 'L3 agent'):
+    for agent_dict in list_alive_l3_agents(all_agents):
         agent_id = agent_dict['id']
         routers = list_routers_on_l3_agent(qclient, agent_id)
         agents.append(Agent(agent_dict, routers))
@@ -436,8 +436,8 @@ def l3_agent_check(qclient):
 
     migration_count = 0
     agent_list = list_agents(qclient)
-    agent_dead_list = list_dead_agents(agent_list, 'L3 agent')
-    agent_alive_list = list_alive_agents(agent_list, 'L3 agent')
+    agent_dead_list = list_dead_l3_agents(agent_list)
+    agent_alive_list = list_alive_l3_agents(agent_list)
     LOG.info("There are %d offline L3 agents and %d online L3 agents",
              len(agent_dead_list), len(agent_alive_list))
 
@@ -473,8 +473,8 @@ def l3_agent_migrate(qclient, agent_picker, router_filter, noop=False,
     """
 
     agent_list = list_agents(qclient)
-    agent_dead_list = list_dead_agents(agent_list, 'L3 agent')
-    agent_alive_list = list_alive_agents(agent_list, 'L3 agent')
+    agent_dead_list = list_dead_l3_agents(agent_list)
+    agent_alive_list = list_alive_l3_agents(agent_list)
     LOG.info("There are %d offline L3 agents and %d online L3 agents",
              len(agent_dead_list), len(agent_alive_list))
 
@@ -490,8 +490,7 @@ def l3_agent_migrate(qclient, agent_picker, router_filter, noop=False,
     if not now:
         while timeout < TAKEOVER_DELAY:
             agent_list_new = list_agents(qclient)
-            agent_dead_list_new = list_dead_agents(agent_list_new,
-                                                   'L3 agent')
+            agent_dead_list_new = list_dead_l3_agents(agent_list_new)
             if len(agent_dead_list_new) < len(agent_dead_list):
                 LOG.info("Skipping router failover since an agent came "
                          "online while ensuring agents offline for %d "
@@ -654,7 +653,7 @@ def migrate_router_safely(qclient, noop, router, agent, target,
                           skip_migration_for_live_agents=False):
     if skip_migration_for_live_agents:
         all_agents = list_agents(qclient)
-        live_agents = list_alive_agents(all_agents, 'L3 agent')
+        live_agents = list_alive_l3_agents(all_agents)
         if agent['id'] in [_agent['id'] for _agent in live_agents]:
             LOG.info(
                 "Agent %s is online, not migrating router %s",
@@ -933,15 +932,15 @@ def list_agents(qclient, agent_type=None):
     return resp['agents']
 
 
-def list_alive_agents(agent_list, agent_type):
+def list_alive_l3_agents(agent_list):
     """
-    Return a list of agents that are alive from an API list of agents
+    Return a list of l3 agents that are alive from an API list of agents.
 
     :param agent_list: API response for list_agents()
 
     """
     return [agent for agent in agent_list
-            if agent['agent_type'] == agent_type and
+            if agent['agent_type'] == 'L3 agent' and
             agent['alive'] is True and
             agent['admin_state_up'] is True]
 
@@ -974,15 +973,16 @@ def target_agent_list(agent_list, agent_type, exclude_agent_host):
             agent['configurations']['agent_mode'] == agent_mode]
 
 
-def list_dead_agents(agent_list, agent_type):
+def list_dead_l3_agents(agent_list):
     """
-    Return a list of agents that are dead from an API list of agents
+    Return a list of l3 agents that are dead from an API list of agents.
 
     :param agent_list: API response for list_agents()
 
     """
     return [agent for agent in agent_list
-            if agent['agent_type'] == agent_type and agent['alive'] is False]
+            if agent['agent_type'] == 'L3 agent' and
+            agent['alive'] is False]
 
 
 class RandomAgentPicker(object):
