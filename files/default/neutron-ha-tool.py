@@ -969,6 +969,7 @@ def target_agent_list(agent_list, agent_type, exclude_agent_host):
     return [agent for agent in agent_list
             if agent['agent_type'] == agent_type and
             agent['alive'] and
+            agent['admin_state_up'] is True and
             agent['host'] != exclude_agent_host and
             agent['configurations']['agent_mode'] == agent_mode]
 
