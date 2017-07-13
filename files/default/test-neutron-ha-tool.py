@@ -147,6 +147,74 @@ class TestL3AgentMigrate(unittest.TestCase):
         self.assertEqual(
             set(['router-1']), fake_neutron.routers_by_agent['live-agent-0'])
 
+    def test_migrate_from_dead_dvr_snat_agent_moves_routers_and_returns_no_errors(self):
+        fake_neutron = setup_fake_neutron(
+            [setup_fake_agent(alive=True, mode='dvr_snat')],
+            [setup_fake_agent(alive=False, mode='dvr_snat')],
+            2*[setup_fake_agent(alive=True, mode='dvr')])
+        neutron_client = FakeNeutronClient(fake_neutron)
+        fake_neutron.add_router('dead-agent-0', 'router-1', {})
+        fake_neutron.add_router('live-agent-0', 'router-1', {})
+
+        error_count = ha_tool.l3_agent_migrate(
+            neutron_client, ha_tool.RandomAgentPicker(),
+            ha_tool.NullRouterFilter(), now=True
+        )
+
+        self.assertEqual(0, error_count)
+        self.assertEqual(
+            set(['router-1']), fake_neutron.routers_by_agent['live-agent-0'])
+
+    def test_migrate_ignores_dead_dvr_agent_returns_no_errors(self):
+        fake_neutron = setup_fake_neutron(
+            [setup_fake_agent(alive=True, mode='dvr')],
+            [setup_fake_agent(alive=False, mode='dvr')])
+        neutron_client = FakeNeutronClient(fake_neutron)
+        fake_neutron.add_router('dead-agent-0', 'router-1', {})
+
+        error_count = ha_tool.l3_agent_migrate(
+            neutron_client, ha_tool.RandomAgentPicker(),
+            ha_tool.NullRouterFilter(), now=True
+        )
+
+        self.assertEqual(0, error_count)
+        self.assertEqual(
+            set(['router-1']), fake_neutron.routers_by_agent['dead-agent-0'])
+
+    def test_no_live_dvr_snat_agents_migrate_returns_with_error(self):
+        fake_neutron = setup_fake_neutron(
+            2*[setup_fake_agent(alive=False, mode='dvr_snat')],
+            2*[setup_fake_agent(alive=True, mode='dvr')])
+        neutron_client = FakeNeutronClient(fake_neutron)
+        fake_neutron.add_router('dead-agent-0', 'router-1', {})
+        fake_neutron.add_router('live-agent-0', 'router-1', {})
+
+        error_count = ha_tool.l3_agent_migrate(
+            neutron_client, ha_tool.RandomAgentPicker(),
+            ha_tool.NullRouterFilter(), now=True
+        )
+
+        self.assertEqual(1, error_count)
+
+    def test_no_live_dvr_agents_migrate_ignores_agents_and_returns_no_errors(self):
+        fake_neutron = setup_fake_neutron(
+            2*[setup_fake_agent(alive=False, mode='dvr')],
+            2*[setup_fake_agent(alive=True, mode='dvr_snat')])
+        neutron_client = FakeNeutronClient(fake_neutron)
+        fake_neutron.add_router('dead-agent-0', 'router-1', {})
+        fake_neutron.add_router('dead-agent-1', 'router-1', {})
+        fake_neutron.add_router('live-agent-0', 'router-1', {})
+
+        error_count = ha_tool.l3_agent_migrate(
+            neutron_client, ha_tool.RandomAgentPicker(),
+            ha_tool.NullRouterFilter(), now=True
+        )
+
+        self.assertEqual(0, error_count)
+        self.assertEqual(
+            set(['router-1']), fake_neutron.routers_by_agent['dead-agent-0'])
+        self.assertEqual(
+            set(['router-1']), fake_neutron.routers_by_agent['dead-agent-1'])
 
 class TestL3AgentEvacuate(unittest.TestCase):
 
@@ -193,6 +261,18 @@ class TestL3AgentEvacuate(unittest.TestCase):
 
         self.assertEqual(1, error_count)
 
+    def test_evacuate_live_dvr_agent_returns_error(self):
+        fake_neutron = setup_fake_neutron(2*[setup_fake_agent(alive=True,mode='dvr')])
+        neutron_client = FakeNeutronClient(fake_neutron)
+        fake_neutron.add_router('live-agent-0', 'router', {})
+        fake_neutron.add_router('live-agent-1', 'router', {})
+
+        error_count = ha_tool.l3_agent_evacuate(
+            neutron_client, 'live-agent-0-host', ha_tool.RandomAgentPicker(),
+            ha_tool.NullRouterFilter()
+        )
+
+        self.assertEqual(1, error_count)
 
 class TestLeastBusyAgentPicker(unittest.TestCase):
 
