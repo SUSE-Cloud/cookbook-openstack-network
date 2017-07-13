@@ -7,6 +7,7 @@ import tempfile
 import mock
 import socket
 import multiprocessing
+import itertools
 
 ha_tool = importlib.import_module("neutron-ha-tool")
 
@@ -84,38 +85,31 @@ class FakeNeutronClient(object):
             ]
         }
 
+def setup_fake_agent(alive, mode='legacy'):
+    return {
+        'agent_type': 'L3 agent',
+        'alive': alive,
+        'admin_state_up': alive,
+        'configurations': {
+            'agent_mode': mode
+        }
+    }
 
-def setup_fake_neutron(live_agents=0, dead_agents=0):
+def setup_fake_neutron(*args):
+    agents = list(itertools.chain(*args))
     fake_neutron = FakeNeutron()
-
-    for i in range(live_agents):
-        fake_neutron.add_agent(
-            'live-agent-{}'.format(i), {
-                'agent_type': 'L3 agent',
-                'alive': True,
-                'admin_state_up': True,
-                'host': 'live-agent-{}-host'.format(i),
-                'configurations': {
-                    'agent_mode': 'Mode X'
-                }
-            }
-        )
-    for i in range(dead_agents):
-        fake_neutron.add_agent(
-            'dead-agent-{}'.format(i), {
-                'agent_type': 'L3 agent',
-                'alive': False,
-                'admin_state_up': False,
-                'host': 'dead-agent-{}-host'.format(i)
-            }
-        )
+    for alive in [True, False]:
+        prefix = 'live' if alive else 'dead'
+        for i, agent in enumerate(agent for agent in agents if agent['alive'] == alive):
+            agent['host'] = '{}-agent-{}-host'.format(prefix, i)
+            fake_neutron.add_agent('{}-agent-{}'.format(prefix, i), agent)
     return fake_neutron
-
 
 class TestL3AgentMigrate(unittest.TestCase):
 
     def test_no_dead_agents_migrate_returns_without_errors(self):
-        neutron_client = FakeNeutronClient(setup_fake_neutron(live_agents=2))
+        neutron_client = FakeNeutronClient(
+            setup_fake_neutron(2*[setup_fake_agent(alive=True)]))
 
         # None as Agent Picker - given no dead agents, no migration, and
         # therefore no agent picking will take place
@@ -126,7 +120,8 @@ class TestL3AgentMigrate(unittest.TestCase):
         self.assertEqual(0, error_count)
 
     def test_no_live_agents_migrate_returns_with_error(self):
-        neutron_client = FakeNeutronClient(setup_fake_neutron(dead_agents=2))
+        neutron_client = FakeNeutronClient(
+            setup_fake_neutron(2*[setup_fake_agent(alive=False)]))
 
         # None as Agent Picker - given no live agents, no migration, and
         # therefore no agent picking will take place
@@ -137,7 +132,9 @@ class TestL3AgentMigrate(unittest.TestCase):
         self.assertEqual(1, error_count)
 
     def test_migrate_from_dead_agent_moves_routers_and_returns_no_errors(self):
-        fake_neutron = setup_fake_neutron(live_agents=1, dead_agents=1)
+        fake_neutron = setup_fake_neutron(
+            [setup_fake_agent(alive=True)],
+            [setup_fake_agent(alive=False)])
         neutron_client = FakeNeutronClient(fake_neutron)
         fake_neutron.add_router('dead-agent-0', 'router-1', {})
 
@@ -165,7 +162,7 @@ class TestL3AgentEvacuate(unittest.TestCase):
         self.assertEqual(0, error_count)
 
     def test_evacuate_live_agent_moves_routers_and_returns_no_errors(self):
-        fake_neutron = setup_fake_neutron(live_agents=2)
+        fake_neutron = setup_fake_neutron(2*[setup_fake_agent(alive=True)])
         neutron_client = FakeNeutronClient(fake_neutron)
         fake_neutron.add_router('live-agent-0', 'router', {})
 
@@ -184,7 +181,7 @@ class TestL3AgentEvacuate(unittest.TestCase):
     def test_evacuate_fast_fail_return_exactly_one_error(self,
                                                          mock_wait_router):
         mock_wait_router.side_effect = RuntimeError("Failure")
-        fake_neutron = setup_fake_neutron(live_agents=2)
+        fake_neutron = setup_fake_neutron(2*[setup_fake_agent(alive=True)])
         neutron_client = FakeNeutronClient(fake_neutron)
         fake_neutron.add_router('live-agent-0', 'router1', {})
         fake_neutron.add_router('live-agent-0', 'router2', {})
@@ -200,7 +197,7 @@ class TestL3AgentEvacuate(unittest.TestCase):
 class TestLeastBusyAgentPicker(unittest.TestCase):
 
     def setUp(self):
-        self.fake_neutron = setup_fake_neutron(live_agents=2)
+        self.fake_neutron = setup_fake_neutron(2*[setup_fake_agent(alive=True)])
         self.neutron_client = FakeNeutronClient(self.fake_neutron)
 
     def make_picker_and_set_agents(self):
@@ -621,7 +618,7 @@ def get_router_distribution(neutron_client):
 
 
 def fake_neutron_with_distribution(router_distribution):
-    fake_neutron = setup_fake_neutron(live_agents=len(router_distribution))
+    fake_neutron = setup_fake_neutron(len(router_distribution)*[setup_fake_agent(alive=True)])
     router_id = 0
     for agent_serial, num_routers in enumerate(router_distribution):
         agent_id = 'live-agent-{}'.format(agent_serial)
@@ -677,7 +674,8 @@ class TestAgentRebalancing(unittest.TestCase):
 
 class TestMigrateL3RoutersFromAgent(unittest.TestCase):
     def test_migrating_router_away_from_dead_agent(self):
-        fake_neutron = setup_fake_neutron(live_agents=1, dead_agents=1)
+        fake_neutron = setup_fake_neutron(
+            [setup_fake_agent(alive=True)], [setup_fake_agent(alive=False)])
         fake_neutron.add_router('dead-agent-0', 'router-0', {})
         neutron_client = FakeNeutronClient(fake_neutron)
         dead_agent = fake_neutron.get_agent('dead-agent-0')
@@ -698,7 +696,7 @@ class TestMigrateL3RoutersFromAgent(unittest.TestCase):
         self.assertEqual((1, 0), (migrations, errors))
 
     def test_migrating_router_away_from_live_agent_does_no_move(self):
-        fake_neutron = setup_fake_neutron(live_agents=2)
+        fake_neutron = setup_fake_neutron(2*[setup_fake_agent(alive=True)])
         fake_neutron.add_router('live-agent-0', 'router-0', {})
         neutron_client = FakeNeutronClient(fake_neutron)
         src_agent = fake_neutron.get_agent('live-agent-0')
@@ -723,7 +721,7 @@ class TestMigrateL3RoutersFromAgent(unittest.TestCase):
         self.assertEqual('live-agent-0', agent['id'])
 
     def test_migrating_router_away_from_live_agent_api_queries(self):
-        fake_neutron = setup_fake_neutron(live_agents=2)
+        fake_neutron = setup_fake_neutron(2*[setup_fake_agent(alive=True)])
         fake_neutron.add_router('live-agent-0', 'router-0', {})
         fake_neutron.add_router('live-agent-0', 'router-1', {})
         fake_neutron.add_router('live-agent-0', 'router-2', {})
