@@ -438,7 +438,8 @@ def l3_agent_check(qclient):
     agent_list = list_agents(qclient)
     agent_dead_list = list_dead_l3_agents(agent_list)
     agent_alive_list = list_alive_l3_agents(agent_list)
-    LOG.info("There are %d offline L3 agents and %d online L3 agents",
+    LOG.info("There are %d offline L3 agents and %d online L3 agents"
+             " (excluding those configured in dvr mode)",
              len(agent_dead_list), len(agent_alive_list))
 
     if len(agent_dead_list) == 0:
@@ -461,7 +462,7 @@ def l3_agent_migrate(qclient, agent_picker, router_filter, noop=False,
     """
     Walk the l3 agents searching for agents that are offline.  For those that
     are offline, we will retrieve a list of routers on them and migrate them to
-    an l3 agent that is online.
+    an l3 agent that is online and has the same mode (snat_dvr, legacy).
 
     :param qclient: A neutronclient
     :param noop: Optional noop flag
@@ -475,7 +476,8 @@ def l3_agent_migrate(qclient, agent_picker, router_filter, noop=False,
     agent_list = list_agents(qclient)
     agent_dead_list = list_dead_l3_agents(agent_list)
     agent_alive_list = list_alive_l3_agents(agent_list)
-    LOG.info("There are %d offline L3 agents and %d online L3 agents",
+    LOG.info("There are %d offline L3 agents and %d online L3 agents"
+             " (excluding those configured in dvr mode)",
              len(agent_dead_list), len(agent_alive_list))
 
     if len(agent_dead_list) == 0:
@@ -548,6 +550,11 @@ def l3_agent_evacuate(qclient, agent_host, agent_picker, router_filter,
     if not agent_to_evacuate:
         LOG.error("Could not locate agent to evacuate; aborting!")
         return 0
+
+    if agent_to_evacuate['configurations']['agent_mode'] == 'dvr':
+        LOG.error("Cannot evacuate an l3 agent configured in dvr-only mode;"
+                  " aborting!")
+        return 1
 
     target_list = target_agent_list(agent_list, 'L3 agent',
                                     exclude_agent=agent_to_evacuate)
@@ -937,6 +944,8 @@ def list_agents(qclient, agent_type=None):
 def list_alive_l3_agents(agent_list):
     """
     Return a list of l3 agents that are alive from an API list of agents.
+    The l3 agents configured in a dvr mode are filtered out because
+    routers cannot be migrated to them.
 
     :param agent_list: API response for list_agents()
 
@@ -944,7 +953,8 @@ def list_alive_l3_agents(agent_list):
     return [agent for agent in agent_list
             if agent['agent_type'] == 'L3 agent' and
             agent['alive'] is True and
-            agent['admin_state_up'] is True]
+            agent['admin_state_up'] is True and
+            agent['configurations']['agent_mode'] != 'dvr']
 
 
 def target_agent_list(agent_list, agent_type, exclude_agent):
@@ -970,13 +980,16 @@ def target_agent_list(agent_list, agent_type, exclude_agent):
 def list_dead_l3_agents(agent_list):
     """
     Return a list of l3 agents that are dead from an API list of agents.
+    The l3 agents configured in a dvr mode are filtered out because
+    routers cannot be migrated away from them.
 
     :param agent_list: API response for list_agents()
 
     """
     return [agent for agent in agent_list
             if agent['agent_type'] == 'L3 agent' and
-            agent['alive'] is False]
+            agent['alive'] is False and
+            agent['configurations']['agent_mode'] != 'dvr']
 
 
 class RandomAgentPicker(object):
