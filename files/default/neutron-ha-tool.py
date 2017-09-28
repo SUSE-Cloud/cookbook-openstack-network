@@ -675,9 +675,8 @@ def migrate_router_safely(qclient, noop, router, agent, target,
         return SUCCESS_MIGRATION
 
     try:
-        with term_disabled():
-            migrate_router(qclient, router, agent, target,
-                           wait_for_router, delete_namespace)
+        migrate_router(qclient, router, agent, target,
+                       wait_for_router, delete_namespace)
         return SUCCESS_MIGRATION
     except:
         LOG.exception("Failed to migrate router=%s from agent=%s "
@@ -699,35 +698,39 @@ def migrate_router(qclient, router, agent, target,
     LOG.info("Migrating router=%s from agent=%s to agent=%s",
              router['id'], agent['id'], target['id'])
 
-    # N.B. The neutron API will return "success" even when there is a
-    # subsequent failure during the add or remove process so we must check to
-    # ensure the router has been added or removed
+    # Prevent SIGTERM only when modifying data through the API, and allow it
+    # when ensuring the API operations completed successfully
+    with term_disabled():
 
-    # Remove the router from the original agent
-    qclient.remove_router_from_l3_agent(agent['id'], router['id'])
-    LOG.debug("Removed router from agent=%s" % agent['id'])
+        # N.B. The neutron API will return "success" even when there is a
+        # subsequent failure during the add or remove process so we must check to
+        # ensure the router has been added or removed
 
-    # ensure it is removed
-    router_ids = [
-        r['id'] for r in list_routers_on_l3_agent(qclient, agent['id'])
-    ]
-    if router['id'] in router_ids:
-        if router['distributed']:
-            # Because of bsc#1016943, the router is not completely removed
-            # from the agent. As a workaround, issuing a second remove
-            # seems to bring the router/agent intro correct state
-            qclient.remove_router_from_l3_agent(agent['id'], router['id'])
-            LOG.debug("The router was not correctly deleted from agent=%s, "
-                      "retrying." % agent['id'])
+        # Remove the router from the original agent
+        qclient.remove_router_from_l3_agent(agent['id'], router['id'])
+        LOG.debug("Removed router from agent=%s" % agent['id'])
 
-        if router in list_routers_on_l3_agent(qclient, agent['id']):
-            raise RuntimeError("Failed to remove router_id=%s from agent_id="
-                               "%s" % (router['id'], agent['id']))
+        # ensure it is removed
+        router_ids = [
+            r['id'] for r in list_routers_on_l3_agent(qclient, agent['id'])
+        ]
+        if router['id'] in router_ids:
+            if router['distributed']:
+                # Because of bsc#1016943, the router is not completely removed
+                # from the agent. As a workaround, issuing a second remove
+                # seems to bring the router/agent intro correct state
+                qclient.remove_router_from_l3_agent(agent['id'], router['id'])
+                LOG.debug("The router was not correctly deleted from agent=%s, "
+                          "retrying." % agent['id'])
 
-    # add the router id to a live agent
-    router_body = {'router_id': router['id']}
-    qclient.add_router_to_l3_agent(target['id'], router_body)
-    LOG.debug("Added router to agent=%s" % target['id'])
+            if router in list_routers_on_l3_agent(qclient, agent['id']):
+                raise RuntimeError("Failed to remove router_id=%s from agent_id="
+                                   "%s" % (router['id'], agent['id']))
+
+        # add the router id to a live agent
+        router_body = {'router_id': router['id']}
+        qclient.add_router_to_l3_agent(target['id'], router_body)
+        LOG.debug("Added router to agent=%s" % target['id'])
 
     # ensure it is added or log an error
     router_ids = [
