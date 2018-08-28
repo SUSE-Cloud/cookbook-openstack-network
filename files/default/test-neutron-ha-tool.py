@@ -63,24 +63,35 @@ class FakeNeutronClient(object):
             router_body['router_id'])
 
     def list_ports(self, device_id, fields):
+        try:
+            host = self.fake_neutron.agent_by_router(device_id)['host']
+            status = 'ACTIVE'
+        except NotImplementedError:
+            host = ""
+            status = 'DOWN'
+
         return {
             'ports': [
                 {
                     'id': 'someid',
-                    'binding:host_id':
-                        self.fake_neutron.agent_by_router(device_id)['host'],
+                    'binding:host_id': host,
                     'binding:vif_type': 'non distributed',
-                    'status': 'ACTIVE'
+                    'status': status
                 }
             ]
         }
 
     def list_floatingips(self, router_id):
+        try:
+            self.fake_neutron.agent_by_router(router_id)['host']
+            status = 'ACTIVE'
+        except NotImplementedError:
+            status = 'DOWN'
         return {
             'floatingips': [
                 {
                     'id': 'irrelevant',
-                    'status': 'ACTIVE'
+                    'status': status
                 }
             ]
         }
@@ -298,6 +309,35 @@ class TestL3AgentEvacuate(unittest.TestCase):
         )
 
         self.assertEqual(1, error_count)
+
+    @mock.patch('neutron-ha-tool.wait_router_migrated')
+    def test_migrating_from_online_agent_does_wait_for_source_and_target_agent(
+            self, mock_wait_router):
+        fake_neutron = setup_fake_neutron(2*[setup_fake_agent(alive=True)])
+        neutron_client = FakeNeutronClient(fake_neutron)
+        fake_neutron.add_router('live-agent-0', 'router1', {})
+        ha_tool.l3_agent_evacuate(neutron_client, 'live-agent-0-host',
+                                  ha_tool.RandomAgentPicker(),
+                                  ha_tool.NullRouterFilter())
+        calls = [
+            mock.call(neutron_client, 'router1',
+                      'live-agent-0-host', state='DOWN'),
+            mock.call(neutron_client, 'router1', 'live-agent-1-host')
+        ]
+        mock_wait_router.assert_has_calls(calls)
+
+    @mock.patch('neutron-ha-tool.wait_router_migrated')
+    def test_migrating_from_offline_agent_does_not_wait_for_source_agent(
+            self, mock_wait_router):
+        fake_neutron = setup_fake_neutron([setup_fake_agent(alive=False),
+                                           setup_fake_agent(alive=True)])
+        neutron_client = FakeNeutronClient(fake_neutron)
+        fake_neutron.add_router('dead-agent-0', 'router1', {})
+        ha_tool.l3_agent_evacuate(neutron_client, 'dead-agent-0-host',
+                                  ha_tool.RandomAgentPicker(),
+                                  ha_tool.NullRouterFilter())
+        mock_wait_router.assert_called_once_with(neutron_client, 'router1',
+                                                 'live-agent-0-host')
 
 
 class TestLeastBusyAgentPicker(unittest.TestCase):

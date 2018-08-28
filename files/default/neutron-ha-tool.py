@@ -727,6 +727,12 @@ def migrate_router(qclient, router, agent, target,
                 raise RuntimeError("Failed to remove router_id=%s from "
                                    "agent_id=%s" % (router['id'], agent['id']))
 
+        # Only wait for the ports if the source agent is really alive,
+        # otherwise we won't see any state change on router ports.
+        if wait_for_router and agent['alive']:
+            wait_router_migrated(qclient, router['id'], agent['host'],
+                                 state="DOWN")
+
         # add the router id to a live agent
         router_body = {'router_id': router['id']}
         qclient.add_router_to_l3_agent(target['id'], router_body)
@@ -747,28 +753,39 @@ def migrate_router(qclient, router, agent, target,
         nscleanup.delete_router_namespace(router['id'])
 
 
-def wait_router_migrated(qclient, router_id, target_host, maxtries=60):
+def wait_router_migrated(qclient, router_id, target_host, maxtries=60,
+                         state="ACTIVE"):
     """
     Returns nothing. Waits for all non-distributed ports and floating IPs
-    of a router for being in the ACTIVE again after a migration.
+    of a router for reaching a specific state (ACTIVE by default) during
+    a migration.
 
     :param qclient: A neutron client
     :param router_id: The id of the router to check
-    :param target_host: The host on which the ports should be ACTIVE
-                        (reflected by the binding:host_id attribute of
-                        a port)
+    :param target_host: The host on which the ports should reach the requested
+                        state. Reflected by the binding:host_id attribute of
+                        a port.
     :param maxtries: Maximum number of times the ports' status is polled,
-                     an expection is raised there are still ports with a
-                     non ACTIVE status after that.
+                     an expection is raised if there are still ports with a
+                     in state that doesn't match the expectation.
+    :param state: The Port state to wait for, can be "ACTIVE" or "DOWN"
     """
 
     LOG.info("Wait for the ports and floating IPs of router_id=%s "
-             "to be ACTIVE", router_id)
+             "to be %s", router_id, state)
     remaining_ports = ["dummy"]
-    remaining_fips = ["dummy"]
+    # For the "DOWN" case it is enough to check for the router ports
+    # as the floating IPs don't change their state until re-assigned
+    remaining_fips = [] if state == 'DOWN' else ['dummy']
+
     remaining_iterations = maxtries
     while remaining_iterations:
         if remaining_ports:
+            expected_host_ids = [target_host]
+            # For "DOWN" ports the 'binding:host_id' can also be empty
+            if state == 'DOWN':
+                expected_host_ids.append('')
+
             router_port_list = qclient.list_ports(device_id=router_id,
                                                   fields=['id',
                                                           'status',
@@ -777,11 +794,11 @@ def wait_router_migrated(qclient, router_id, target_host, maxtries=60):
             remaining_ports = [
                 port['id'] for port in router_port_list['ports']
                 if (port['binding:vif_type'] != 'distributed' and
-                    not (port['status'] == 'ACTIVE' and
-                         port['binding:host_id'] == target_host))
+                    not (port['status'] == state and
+                         port['binding:host_id'] in expected_host_ids))
             ]
-            LOG.debug("Ports not ACTIVE on router_id=%s: [%s]",
-                      router_id, ", ".join(remaining_ports))
+            LOG.info("Ports not %s on router_id=%s: [%s]", state,
+                     router_id, ", ".join(remaining_ports))
             if not remaining_ports:
                 # avoid an unneeded sleep when all ports back and before
                 # starting to check the floating IPs
@@ -789,23 +806,25 @@ def wait_router_migrated(qclient, router_id, target_host, maxtries=60):
         elif remaining_fips:
             floating_ips = qclient.list_floatingips(router_id=router_id)
             remaining_fips = [fip['id'] for fip in floating_ips['floatingips']
-                              if fip['status'] != 'ACTIVE']
+                              if fip['status'] != state]
             LOG.debug("Floating IPs not active: [%s]",
                       ", ".join(remaining_fips))
             if not remaining_fips:
                 break
+        else:
+            break
 
         remaining_iterations -= 1
         if remaining_iterations:
             time.sleep(1)
 
     if remaining_ports:
-        raise RuntimeError("Some ports are not ACTIVE on router_id=%s: [%s]" %
-                           (router_id, ", ".join(remaining_ports)))
+        raise RuntimeError("Some ports are not %s on router_id=%s: [%s]" %
+                           (state, router_id, ", ".join(remaining_ports)))
     elif remaining_fips:
-        raise RuntimeError("Some floating ips are not ACTIVE "
+        raise RuntimeError("Some floating ips are not %s "
                            "on router_id=%s: [%s]" %
-                           (router_id, ", ".join(remaining_fips)))
+                           (state, router_id, ", ".join(remaining_fips)))
 
 
 def list_networks(qclient):
