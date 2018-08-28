@@ -703,8 +703,8 @@ def migrate_router(qclient, router, agent, target,
     with term_disabled():
 
         # N.B. The neutron API will return "success" even when there is a
-        # subsequent failure during the add or remove process so we must check to
-        # ensure the router has been added or removed
+        # subsequent failure during the add or remove process so we must check
+        # to ensure the router has been added or removed
 
         # Remove the router from the original agent
         qclient.remove_router_from_l3_agent(agent['id'], router['id'])
@@ -720,12 +720,12 @@ def migrate_router(qclient, router, agent, target,
                 # from the agent. As a workaround, issuing a second remove
                 # seems to bring the router/agent intro correct state
                 qclient.remove_router_from_l3_agent(agent['id'], router['id'])
-                LOG.debug("The router was not correctly deleted from agent=%s, "
-                          "retrying." % agent['id'])
+                LOG.debug("The router was not correctly deleted from "
+                          "agent=%s, retrying." % agent['id'])
 
             if router in list_routers_on_l3_agent(qclient, agent['id']):
-                raise RuntimeError("Failed to remove router_id=%s from agent_id="
-                                   "%s" % (router['id'], agent['id']))
+                raise RuntimeError("Failed to remove router_id=%s from "
+                                   "agent_id=%s" % (router['id'], agent['id']))
 
         # add the router id to a live agent
         router_body = {'router_id': router['id']}
@@ -967,7 +967,6 @@ def list_alive_l3_agents_except(agent_list, exclude_agent):
     The l3 agents configured in a dvr mode are filtered out because
     routers cannot be migrated to them. Implicitly, this also means that
     the returned l3 agents are of the same mode as the excluded agent.
-    
 
     :param agent_list: API response for list_agents()
     :param exclude_agent: agent to exclude from the list
@@ -975,6 +974,7 @@ def list_alive_l3_agents_except(agent_list, exclude_agent):
     """
     return [agent for agent in list_alive_l3_agents(agent_list)
             if agent['id'] != exclude_agent['id']]
+
 
 def list_dead_l3_agents(agent_list):
     """

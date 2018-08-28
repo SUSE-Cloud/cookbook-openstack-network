@@ -85,6 +85,7 @@ class FakeNeutronClient(object):
             ]
         }
 
+
 def setup_fake_agent(alive, admin_state_up=True, mode='legacy'):
     return {
         'agent_type': 'L3 agent',
@@ -95,15 +96,18 @@ def setup_fake_agent(alive, admin_state_up=True, mode='legacy'):
         }
     }
 
+
 def setup_fake_neutron(*args):
     agents = list(itertools.chain(*args))
     fake_neutron = FakeNeutron()
     for alive in [True, False]:
         prefix = 'live' if alive else 'dead'
-        for i, agent in enumerate(agent for agent in agents if agent['alive'] == alive):
+        for i, agent in enumerate(
+                agent for agent in agents if agent['alive'] == alive):
             agent['host'] = '{}-agent-{}-host'.format(prefix, i)
             fake_neutron.add_agent('{}-agent-{}'.format(prefix, i), agent)
     return fake_neutron
+
 
 class TestL3AgentMigrate(unittest.TestCase):
 
@@ -196,7 +200,8 @@ class TestL3AgentMigrate(unittest.TestCase):
 
         self.assertEqual(1, error_count)
 
-    def test_no_live_dvr_agents_migrate_ignores_agents_and_returns_no_errors(self):
+    def test_no_live_dvr_agents_migrate_ignores_agents_and_returns_no_errors(
+            self):
         fake_neutron = setup_fake_neutron(
             2*[setup_fake_agent(alive=False, mode='dvr')],
             2*[setup_fake_agent(alive=True, mode='dvr_snat')])
@@ -216,6 +221,7 @@ class TestL3AgentMigrate(unittest.TestCase):
         self.assertEqual(
             set(['router-1']), fake_neutron.routers_by_agent['dead-agent-1'])
 
+
 class TestL3AgentEvacuate(unittest.TestCase):
 
     def test_evacuate_without_agents_returns_no_errors(self):
@@ -229,7 +235,8 @@ class TestL3AgentEvacuate(unittest.TestCase):
 
         self.assertEqual(0, error_count)
 
-    def test_evacuate_without_admin_up_agents_returns_no_errors_does_nothing(self):
+    def test_evacuate_without_admin_up_agents_returns_no_errors_does_nothing(
+            self):
         fake_neutron = setup_fake_neutron(
             [setup_fake_agent(alive=True, admin_state_up=False)])
         neutron_client = FakeNeutronClient(fake_neutron)
@@ -279,7 +286,8 @@ class TestL3AgentEvacuate(unittest.TestCase):
         self.assertEqual(1, error_count)
 
     def test_evacuate_live_dvr_agent_returns_error(self):
-        fake_neutron = setup_fake_neutron(2*[setup_fake_agent(alive=True,mode='dvr')])
+        fake_neutron = setup_fake_neutron(2*[setup_fake_agent(alive=True,
+                                                              mode='dvr')])
         neutron_client = FakeNeutronClient(fake_neutron)
         fake_neutron.add_router('live-agent-0', 'router', {})
         fake_neutron.add_router('live-agent-1', 'router', {})
@@ -291,10 +299,13 @@ class TestL3AgentEvacuate(unittest.TestCase):
 
         self.assertEqual(1, error_count)
 
+
 class TestLeastBusyAgentPicker(unittest.TestCase):
 
     def setUp(self):
-        self.fake_neutron = setup_fake_neutron(2*[setup_fake_agent(alive=True)])
+        self.fake_neutron = setup_fake_neutron(
+            2*[setup_fake_agent(alive=True)]
+        )
         self.neutron_client = FakeNeutronClient(self.fake_neutron)
 
     def make_picker_and_set_agents(self):
@@ -715,7 +726,9 @@ def get_router_distribution(neutron_client):
 
 
 def fake_neutron_with_distribution(router_distribution):
-    fake_neutron = setup_fake_neutron(len(router_distribution)*[setup_fake_agent(alive=True)])
+    fake_neutron = setup_fake_neutron(
+        len(router_distribution)*[setup_fake_agent(alive=True)]
+    )
     router_id = 0
     for agent_serial, num_routers in enumerate(router_distribution):
         agent_id = 'live-agent-{}'.format(agent_serial)
