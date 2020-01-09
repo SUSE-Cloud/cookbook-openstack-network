@@ -753,7 +753,7 @@ def migrate_router(qclient, router, agent, target,
         nscleanup.delete_router_namespace(router['id'])
 
 
-def wait_router_migrated(qclient, router_id, target_host, maxtries=60,
+def wait_router_migrated(qclient, router_id, target_host, maxtries=120,
                          state="ACTIVE"):
     """
     Returns nothing. Waits for all non-distributed ports and floating IPs
