@@ -629,6 +629,7 @@ class TestArgumentParsing(unittest.TestCase):
                 l3_agent_migrate=False,
                 l3_agent_evacuate=None,
                 l3_agent_rebalance=False,
+                dhcp_agent_evacuate=None,
                 replicate_dhcp=False,
                 now=False,
                 retry=False,
@@ -640,6 +641,7 @@ class TestArgumentParsing(unittest.TestCase):
                 target_agent_id=None,
                 target_host=None,
                 wait_for_router=True,
+                wait_for_dhcp_network=True,
                 fail_fast=False
             ),
             params
