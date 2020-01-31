@@ -743,8 +743,8 @@ def migrate_router(qclient, router, agent, target,
         r['id'] for r in list_routers_on_l3_agent(qclient, target['id'])
     ]
     if router['id'] not in router_ids:
-        raise RuntimeError("Failed to add router_id=%s from agent_id=%s" %
-                           (router['id'], agent['id']))
+        raise RuntimeError("Failed to add router_id=%s to agent_id=%s" %
+                           (router['id'], target['id']))
     if wait_for_router:
         wait_router_migrated(qclient, router['id'], target['host'])
 
