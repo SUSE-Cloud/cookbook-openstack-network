@@ -36,7 +36,7 @@ import paramiko
 import socket
 import signal
 
-from neutronclient.common.exceptions import NeutronException
+from neutronclient.common.exceptions import NeutronException, NotFound, Conflict
 from neutronclient.neutron import client as nclient
 import keystoneclient.v2_0.client as kclientv2
 import keystoneclient.v3.client as kclientv3
@@ -77,6 +77,8 @@ def make_argparser():
                     help='Migrate routers away from l3 agent living on HOST')
     ap.add_argument('--l3-agent-rebalance', action='store_true', default=False,
                     help='Rebalance router count on all l3 agents')
+    ap.add_argument('--dhcp-agent-evacuate', default=None, metavar='HOST',
+                    help='Migrate dhcp away from dhcp agent living on HOST')
     ap.add_argument('--replicate-dhcp', action='store_true', default=False,
                     help='Replicate DHCP configuration to all agents')
     ap.add_argument('--now', action='store_true', default=False,
@@ -134,6 +136,19 @@ def make_argparser():
                                   'its ports and floating IPs to be ACTIVE '
                                   'again on the target agent.')
     wait_parser.set_defaults(wait_for_router=True)
+
+    wait_dhcp_parser = ap.add_mutually_exclusive_group(required=False)
+    wait_dhcp_parser.add_argument('--wait-for-dhcp-network',
+                                  action='store_true',
+                                  dest='wait_for_dhcp_network')
+    wait_dhcp_parser.add_argument('--no-wait-for-dhcp-network',
+                                  action='store_false',
+                                  dest='wait_for_dhcp_network',
+                             help='When migrating networks from DHCP agent, '
+                                  'do not wait for its ports to be ACTIVE '
+                                  'again on the target agent.')
+    wait_dhcp_parser.set_defaults(wait_for_dhcp_network=True)
+
     return ap
 
 
@@ -154,6 +169,7 @@ def parse_args():
         args.l3_agent_migrate,
         args.l3_agent_evacuate,
         args.l3_agent_rebalance,
+        args.dhcp_agent_evacuate,
         args.replicate_dhcp,
     ]
     if sum(1 for x in modes if x) != 1:
@@ -304,6 +320,14 @@ def run(args):
             qclient, args.l3_agent_evacuate, agent_picker, router_filter,
             args.noop, args.wait_for_router, args.ssh_delete_namespace,
             args.fail_fast
+        )
+
+    elif args.dhcp_agent_evacuate:
+        LOG.info("Performing DHCP Agent Evacuation from host %s",
+                 args.dhcp_agent_evacuate)
+        errors = retry_with_backoff(dhcp_agent_evacuate, args)(
+            qclient, args.dhcp_agent_evacuate, agent_picker,
+            args.noop, args.wait_for_dhcp_network, args.fail_fast
         )
 
     elif args.l3_agent_rebalance:
@@ -576,6 +600,202 @@ def l3_agent_evacuate(qclient, agent_host, agent_picker, router_filter,
     return errors
 
 
+def dhcp_agent_evacuate(qclient, agent_host, agent_picker,
+                      noop=False, wait_for_network=True, fail_fast=False):
+    """
+    Retreive a list of networks scheduled on the listed DHCP agent, and move that
+    to another agent.
+
+    :param qclient: A neutronclient
+    :param noop: Optional noop flag
+    :param agent_host: The hostname of the DHCP agent to migrate networks from
+    :param agent_picker: Object used to select target agent
+    :param wait_for_network: Optional wait-for-dhcp-network flag
+    :param fail_fast: Optional fail-on-first-error flag
+    :returns: Total number of errors encountered
+
+    """
+
+    agent_list = list_agents(qclient, agent_type='DHCP agent')
+
+    agent_to_evacuate = None
+    for agent in agent_list:
+        if agent.get('host', None) == agent_host:
+            agent_to_evacuate = agent
+            break
+
+    if not agent_to_evacuate:
+        LOG.error("Could not locate agent to evacuate; aborting!")
+        return 0
+
+    target_list = list_alive_dhcp_agents_except(agent_list,
+                                                exclude_agent=agent_to_evacuate)
+
+    if len(target_list) < 1:
+        LOG.error("There are no DHCP agents alive to migrate networks onto")
+        return 0
+
+    (migrations, errors) = \
+        migrate_dhcp_networks_from_agent(qclient, agent_to_evacuate,
+                                      target_list, agent_picker,
+                                      noop, wait_for_network, fail_fast)
+    LOG.info("%d networks %s evacuated from DHCP agent %s", migrations,
+             "would have been" if noop else "were", agent_host)
+    if errors > 0:
+        LOG.error("%d errors encountered during evacuation", errors)
+
+    return errors
+
+
+def migrate_dhcp_networks_from_agent(qclient, agent, targets, agent_picker,
+                                     noop, wait_for_network, fail_fast):
+    LOG.info("Querying agent_id=%s for networks to migrate away", agent['id'])
+
+    networks_on_agent = qclient.list_networks_on_dhcp_agent(agent['id'])['networks']
+
+    agent_picker.set_agents(targets)
+
+    migrations = 0
+    errors = 0
+    for network in networks_on_agent:
+        target = agent_picker.pick()
+
+        if noop:
+            LOG.info("Would try to migrate network=%s from agent=%s "
+                 "to agent=%s", network['id'], agent['id'], target['id'])
+            migrations += 1
+            continue
+
+        try:
+            migrate_dhcp_network(qclient, network, agent, target, wait_for_network)
+            migrations += 1
+        except:
+            LOG.exception("Failed to migrate network_id=%s from agent=%s to "
+                          "agent=%s", network['id'], agent['id'], target['id'])
+            errors += 1
+            if fail_fast:
+                break
+
+    return (migrations, errors)
+
+
+def migrate_dhcp_network(qclient, network, agent, target,
+                         wait_for_network=True):
+    """
+    Returns nothing, and raises exceptions on errors.
+
+    :param qclient: A neutronclient
+    :param network: The network to migrate
+    :param agent: The DHCP agent to migrate from
+    :param target: The DHCP agent to migrate to
+    :param wait_for_network: Optional wait-for-dhcp-network flag
+    """
+
+    network_id = network['id']
+    agent_id = agent['id']
+    target_id = target['id']
+
+    LOG.info("Migrating network=%s from agent=%s to agent=%s",
+             network_id, agent_id, target_id)
+
+    # Prevent SIGTERM only when modifying data through the API, and allow it
+    # when ensuring the API operations completed successfully
+    with term_disabled():
+
+        try:
+            # Remove the network from the original agent
+            qclient.remove_network_from_dhcp_agent(agent_id, network_id)
+            LOG.debug("Removed network from agent=%s" % agent_id)
+        # network might have been removed (be neutron) in the mean time
+        except (NotFound, Conflict) as e:
+            LOG.debug("Network has already been removed from agent=%s" % agent_id)
+
+        # ensure it is removed
+        if dhcp_network_is_on_agent(qclient, network_id, agent_id):
+            raise RuntimeError("Failed to remove network_id=%s from "
+                               "agent_id=%s" % (network_id, agent_id))
+
+        # Only wait for the ports if the source agent is really alive,
+        # otherwise we won't see any state change on dhcp ports.
+        if wait_for_network and agent['alive']:
+            wait_dhcp_network_migrated(qclient, network_id, agent['host'],
+                                       state="DOWN")
+
+        try:
+            # add the network id to a live agent
+            dhcp_body = {'network_id': network_id}
+            qclient.add_network_to_dhcp_agent(target_id, dhcp_body)
+            LOG.debug("Added network to agent=%s" % target_id)
+        # network might have been added (by neutron) in the mean time
+        except Conflict as e:
+            LOG.debug("Network has already been added to agent=%s" % target_id)
+
+    # ensure it is added or log an error
+    if not dhcp_network_is_on_agent(qclient, network_id, target_id):
+        raise RuntimeError("Failed to add network_id=%s to agent_id=%s" %
+                           (network_id, target_id))
+    if wait_for_network:
+        wait_dhcp_network_migrated(qclient, network_id, target['host'])
+
+
+def wait_dhcp_network_migrated(qclient, network_id, target_host, maxtries=180,
+                         state="ACTIVE"):
+    """
+    Returns nothing. Waits for all DHCP ports of a network for reaching a
+    specific state (ACTIVE by default) during a migration.
+
+    :param qclient: A neutron client
+    :param network_id: The id of the network to check
+    :param target_host: The host on which the ports should reach the requested
+                        state. Reflected by the binding:host_id attribute of
+                        a port.
+    :param maxtries: Maximum number of times the ports' status is polled,
+                     an expection is raised if there are still ports with a
+                     in state that doesn't match the expectation.
+    :param state: The Port state to wait for, can be "ACTIVE" or "DOWN"
+    """
+
+    LOG.info("Wait for the DHCP ports of network_id=%s "
+             "to be %s", network_id, state)
+    remaining_ports = ["dummy"]
+
+    remaining_iterations = maxtries
+    while remaining_iterations:
+        if remaining_ports:
+            expected_host_ids = [target_host]
+            # For "DOWN" ports the 'binding:host_id' can also be empty
+            if state == 'DOWN':
+                expected_host_ids.append('')
+
+            dhcp_port_list = qclient.list_ports(network_id=network_id,
+                                                device_owner='network:dhcp',
+                                                fields=['id',
+                                                        'status',
+                                                        'device_id',
+                                                        'binding:host_id'])
+            remaining_ports = [
+                port['id'] for port in dhcp_port_list['ports']
+                if (port['device_id'] != 'reserved_dhcp_port' and
+                    port['status'] != state and
+                    port['binding:host_id'] in expected_host_ids)
+            ]
+            LOG.info("DHCP ports not %s on network_id=%s: [%s]", state,
+                     network_id, ", ".join(remaining_ports))
+            if not remaining_ports:
+                # avoid an unneeded sleep when all ports are in correct state
+                continue
+        else:
+            break
+
+        remaining_iterations -= 1
+        if remaining_iterations:
+            time.sleep(1)
+
+    if remaining_ports:
+        raise RuntimeError("Some DHCP ports are not %s on network_id=%s: [%s]" %
+                           (state, network_id, ", ".join(remaining_ports)))
+
+
 def replicate_dhcp(qclient, noop=False):
     """
     Retrieve a network list and then probe each DHCP agent to ensure
@@ -743,8 +963,8 @@ def migrate_router(qclient, router, agent, target,
         r['id'] for r in list_routers_on_l3_agent(qclient, target['id'])
     ]
     if router['id'] not in router_ids:
-        raise RuntimeError("Failed to add router_id=%s from agent_id=%s" %
-                           (router['id'], agent['id']))
+        raise RuntimeError("Failed to add router_id=%s to agent_id=%s" %
+                           (router['id'], target['id']))
     if wait_for_router:
         wait_router_migrated(qclient, router['id'], target['host'])
 
@@ -1008,6 +1228,46 @@ def list_dead_l3_agents(agent_list):
             if agent['agent_type'] == 'L3 agent' and
             agent['alive'] is False and
             agent['configurations']['agent_mode'] != 'dvr']
+
+
+def list_alive_dhcp_agents(agent_list):
+    """
+    Return a list of DHCP agents that are alive from an API list of agents.
+
+    :param agent_list: API response for list_agents()
+
+    """
+    return [agent for agent in agent_list
+            if agent['agent_type'] == 'DHCP agent' and
+            agent['alive'] is True and
+            agent['admin_state_up'] is True]
+
+
+def list_alive_dhcp_agents_except(agent_list, exclude_agent):
+    """
+    Return a list of DHCP agents that are alive, excluding the one we want to
+    migrate from.
+
+    :param agent_list: API response for list_agents()
+    :param exclude_agent: agent to exclude from the list
+
+    """
+    return [agent for agent in list_alive_dhcp_agents(agent_list)
+            if agent['id'] != exclude_agent['id']]
+
+
+def dhcp_network_is_on_agent(qclient, network_id, agent_id):
+    """
+    Return true if network exists on given agent. False otherwise.
+
+    :param qclient: A neutronclient
+    :param network_id: ID of network to be checked
+    :param agent_id: A DHCP agent_id
+    """
+    network_ids = [
+        n['id'] for n in qclient.list_networks_on_dhcp_agent(agent_id)['networks']
+    ]
+    return network_id in network_ids
 
 
 class RandomAgentPicker(object):
